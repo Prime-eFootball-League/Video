@@ -93,6 +93,9 @@ input[type=range]{width:100%;accent-color:var(--neon)}
 /* messages */
 .msg-error{display:flex;gap:8px;font-size:12px;color:#ff9a9a;background:var(--red-bg);border:1px solid #4a2020;border-radius:9px;padding:9px 11px}
 .msg-note{display:flex;gap:8px;font-size:11.5px;color:var(--dim2);background:rgba(166,255,46,.06);border:1px solid var(--border2);border-radius:9px;padding:9px 11px;line-height:1.5}
+.live-match-chip{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;background:rgba(255,255,255,.03);border:1px solid var(--border2);border-radius:8px;padding:8px 10px;margin-bottom:6px;font-size:12px;color:var(--fg);cursor:pointer;font-family:inherit}
+.live-match-chip:hover{border-color:var(--neon)}
+.live-match-chip .lm-status{font-size:10px;color:var(--neon);white-space:nowrap;text-transform:uppercase;letter-spacing:.03em}
 
 /* sandbox */
 .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;padding:60px 10px;color:#2f5c48}
@@ -133,34 +136,22 @@ footer{text-align:center;font-size:11px;color:#2f5c48;padding:20px 0 30px}
   </div>
   <div class="container" id="settings-panel">
     <div class="settings-box">
-      <label class="settings-label">Gemini API Key</label>
+      <label class="settings-label">API Status</label>
       <div class="settings-row">
-        <input type="password" id="apiKeyInput" placeholder="Paste your Gemini API key"/>
-        <button class="icon-btn" id="toggleKeyBtn" title="Show/hide key">👁</button>
-      </div>
-      <div class="settings-note">
-        Saved to this browser's local storage once you host or open this file directly, so it'll still be
-        there next time you load the page. Get a free key at <b>aistudio.google.com/apikey</b>.
-      </div>
-
-      <label class="settings-label" style="margin-top:16px">Live Stats API Key (API-Football, via RapidAPI)</label>
-      <div class="settings-row">
-        <input type="password" id="footballKeyInput" placeholder="Paste your RapidAPI key"/>
-        <button class="icon-btn" id="toggleFootballKeyBtn" title="Show/hide key">👁</button>
-        <button class="icon-btn" id="testFootballKeyBtn" title="Test this key">▶</button>
+        <button class="icon-btn" id="testFootballKeyBtn" title="Check server API status">▶ Check server APIs</button>
       </div>
       <div id="footballKeyStatus"></div>
       <div class="settings-note">
-        Used to pull real formations, squad lists, and team stats alongside the Gemini search above.
-        Subscribe free to <b>"Free API Live Football Data"</b> or <b>"API-Football"</b> on RapidAPI, paste
-        the key here, then press ▶ — it makes one lightweight call to confirm the key works and show your
-        remaining quota before you rely on it.
+        Gemini, API-Football, and football-data.org calls now run through this site's own <b>/api</b> backend, so
+        no key ever touches your browser. If a request fails with a "server is missing" error, the site owner
+        needs to add <b>GEMINI_API_KEY</b>, <b>RAPIDAPI_KEY</b>, and/or <b>FOOTBALL_DATA_API_KEY</b> in Vercel →
+        Project Settings → Environment Variables, then redeploy.
       </div>
 
-      <div class="settings-note">
-        Your whole workspace — search results, chat history, script draft, and settings — autosaves locally
-        too, so reopening the page picks up right where you left off (screenshots/files you attached in
-        chat aren't kept, since images are too large for local storage; everything else is).
+      <div class="settings-note" style="margin-top:10px">
+        Your workspace — search results, chat history, script draft, and voice settings — autosaves locally
+        in this browser, so reopening the page picks up right where you left off (screenshots/files you
+        attached in chat aren't kept, since images are too large for local storage; everything else is).
       </div>
       <button class="stop-mini" id="clearDataBtn" style="margin-top:10px">🗑 Clear Saved Data</button>
     </div>
@@ -189,6 +180,11 @@ footer{text-align:center;font-size:11px;color:#2f5c48;padding:20px 0 30px}
           <button class="btn-outline" id="matchSearchBtn" style="width:auto;white-space:nowrap;padding:10px 16px">🔎 Search</button>
         </div>
       </div>
+      <div class="settings-row" style="margin-bottom:10px">
+        <button class="btn-outline" id="liveMatchesBtn" style="width:auto;white-space:nowrap;padding:8px 14px;font-size:12px">📡 Live Matches Today</button>
+        <span style="font-size:11px;color:var(--dim)">Exact scores from football-data.org — top 12 leagues only</span>
+      </div>
+      <div id="liveMatchesList" style="margin-bottom:10px"></div>
       <div id="matchSearchError"></div>
       <div id="matchResults" style="display:none">
         <div class="field">
@@ -343,7 +339,7 @@ footer{text-align:center;font-size:11px;color:#2f5c48;padding:20px 0 30px}
   </div>
 </main>
 
-<footer>Runs entirely client-side. Script drafting calls Google's Gemini API directly from your browser using your own key.</footer>
+<footer>Script drafting and live football data are fetched through this site's own backend (Vercel serverless functions), so no API key ever sits in your browser. Voiceover synthesis still runs client-side.</footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://js.puter.com/v2/"></script>
@@ -505,17 +501,20 @@ function pickBrowserMaleVoice(){
 
 /* Strips the visual [0:00 - THE HOOK]-style section headers out of the script
    before sending it to any TTS engine — those are sandbox-only markers, not
-   spoken lines. */
+   spoken lines. Matches the bracket wherever it falls on a line (not just
+   when it's alone on its own line), since the model doesn't always put a
+   line break right after it — that gap was why voiceover sometimes read
+   "The hook 0:00" out loud instead of skipping it. */
 function stripScriptMarkup(text){
-  return text.replace(/^\s*\[[^\]\n]*\]\s*$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+  return text.replace(/\[[^\]\n]*\]/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 /* ---------------------------------------------------------------- */
 /* DOM refs                                                          */
 /* ---------------------------------------------------------------- */
 var $ = function(id){ return document.getElementById(id); };
-var apiKeyInput = $('apiKeyInput'), toggleKeyBtn = $('toggleKeyBtn'), settingsBtn = $('settingsBtn'), settingsPanel = $('settings-panel');
-var footballKeyInput = $('footballKeyInput'), toggleFootballKeyBtn = $('toggleFootballKeyBtn'), testFootballKeyBtn = $('testFootballKeyBtn'), footballKeyStatus = $('footballKeyStatus');
+var settingsBtn = $('settingsBtn'), settingsPanel = $('settings-panel');
+var testFootballKeyBtn = $('testFootballKeyBtn'), footballKeyStatus = $('footballKeyStatus');
 var personaSelect = $('personaSelect'), modeSelect = $('modeSelect'), durationSlider = $('durationSlider'), durationLabel = $('durationLabel');
 var teamDetails = $('teamDetails'), tacticalContext = $('tacticalContext'), draftBtn = $('draftBtn'), draftError = $('draftError');
 var sandboxEmpty = $('sandboxEmpty'), sandboxFull = $('sandboxFull'), scriptBox = $('scriptBox'), wordCount = $('wordCount'), charCount = $('charCount');
@@ -524,21 +523,18 @@ var voiceBtn = $('voiceBtn'), voiceError = $('voiceError'), engineNote = $('engi
 var badge1=$('badge1'), badge2=$('badge2'), badge3=$('badge3'), stage1=$('stage1'), stage2=$('stage2'), stage3=$('stage3');
 var matchQuery=$('matchQuery'), matchSearchBtn=$('matchSearchBtn'), matchSearchError=$('matchSearchError');
 var matchResults=$('matchResults'), verifiedFacts=$('verifiedFacts'), matchSources=$('matchSources'), useFactsBtn=$('useFactsBtn');
+var liveMatchesBtn=$('liveMatchesBtn'), liveMatchesList=$('liveMatchesList');
 var chatMessages=$('chatMessages'), chatError=$('chatError'), chatInput=$('chatInput'), chatSendBtn=$('chatSendBtn'), useChatBtn=$('useChatBtn');
 var attachImageBtn=$('attachImageBtn'), imageInput=$('imageInput'), attachFileBtn=$('attachFileBtn'), dataFileInput=$('dataFileInput'), attachmentsPreview=$('attachmentsPreview');
 var clearDataBtn=$('clearDataBtn');
 
 var state = {
-  apiKey: lsGet('mdsb_gemini_key'),
-  footballApiKey: lsGet('mdsb_football_key'),
   audioUrl: null,
   usingFallback: false,
   isPlaying: false,
   audioEl: null,
   utterance: null
 };
-apiKeyInput.value = state.apiKey;
-footballKeyInput.value = state.footballApiKey;
 
 /* ---------------------------------------------------------------- */
 /* Whole-workspace autosave (so nothing needs redoing on reload)      */
@@ -638,22 +634,6 @@ clearDataBtn.addEventListener('click', function(){
 /* Settings panel                                                    */
 /* ---------------------------------------------------------------- */
 settingsBtn.addEventListener('click', function(){ settingsPanel.classList.toggle('open'); });
-toggleKeyBtn.addEventListener('click', function(){
-  apiKeyInput.type = apiKeyInput.type==='password' ? 'text' : 'password';
-});
-apiKeyInput.addEventListener('input', function(){
-  state.apiKey = apiKeyInput.value.trim();
-  lsSet('mdsb_gemini_key', state.apiKey);
-});
-
-toggleFootballKeyBtn.addEventListener('click', function(){
-  footballKeyInput.type = footballKeyInput.type==='password' ? 'text' : 'password';
-});
-footballKeyInput.addEventListener('input', function(){
-  state.footballApiKey = footballKeyInput.value.trim();
-  lsSet('mdsb_football_key', state.footballApiKey);
-  footballKeyStatus.innerHTML = '';
-});
 
 function setFootballKeyStatus(kind, msg){
   var cls = kind === 'ok' ? 'msg-note' : 'msg-error';
@@ -661,46 +641,48 @@ function setFootballKeyStatus(kind, msg){
   footballKeyStatus.innerHTML = '<div class="'+cls+'">'+icon+' <span>'+msg+'</span></div>';
 }
 
+/* Pings our own /api routes (not the upstream providers directly) so this
+   also verifies the Vercel deployment has GEMINI_API_KEY / RAPIDAPI_KEY set. */
 testFootballKeyBtn.addEventListener('click', function(){
-  var key = footballKeyInput.value.trim();
-  if(!key){ setFootballKeyStatus('err', 'Paste a key first, then press ▶.'); return; }
-
   testFootballKeyBtn.disabled = true;
   var originalIcon = testFootballKeyBtn.textContent;
   testFootballKeyBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px"></span>';
-  footballKeyStatus.innerHTML = '<div class="msg-note">⏳ <span>Checking key against RapidAPI…</span></div>';
+  footballKeyStatus.innerHTML = '<div class="msg-note">⏳ <span>Checking server API status…</span></div>';
 
-  fetch('https://api-football-v1.p.rapidapi.com/v3/status', {
-    method: 'GET',
-    headers: {
-      'x-rapidapi-key': key,
-      'x-rapidapi-host': 'api-football-v1.p.rapidapi.com'
-    }
-  }).then(function(res){
-    if(res.status === 401 || res.status === 403){
-      throw new Error('Key was rejected (unauthorized). Double-check you copied it correctly and subscribed to the Basic/Free plan on RapidAPI.');
-    }
-    if(res.status === 429){
-      throw new Error('Key is valid, but you\'ve hit your request limit for this period.');
-    }
-    if(!res.ok){
-      throw new Error('Request failed with status '+res.status+'. The API may be temporarily down.');
-    }
-    return res.json();
-  }).then(function(data){
-    var acct = data && data.response;
+  var apiFootballMsg = null, apiFootballErr = null;
+  var footballDataMsg = null, footballDataErr = null;
+
+  var checkApiFootball = fetch('/api/football/status').then(function(res){
+    return res.json().then(function(data){ return { ok: res.ok, status: res.status, data: data }; });
+  }).then(function(result){
+    if(!result.ok) throw new Error((result.data && result.data.error) || ('status '+result.status));
+    var acct = result.data && result.data.response;
     if(acct && acct.subscription){
       var plan = acct.subscription.plan || 'Unknown plan';
-      var remaining = (acct.requests && (acct.requests.limit_day - acct.requests.current)) ;
+      var remaining = (acct.requests && (acct.requests.limit_day - acct.requests.current));
       var limit = acct.requests && acct.requests.limit_day;
-      var quotaMsg = (remaining!=null && limit!=null) ? (' You have '+remaining+' of '+limit+' requests left today.') : '';
-      setFootballKeyStatus('ok', 'Key saved and working — on the "'+plan+'" plan.'+quotaMsg);
+      var quotaMsg = (remaining!=null && limit!=null) ? (' ('+remaining+'/'+limit+' left today)') : '';
+      apiFootballMsg = 'API-Football OK — "'+plan+'" plan.'+quotaMsg;
     } else {
-      setFootballKeyStatus('ok', 'Key saved and working.');
+      apiFootballMsg = 'API-Football reachable.';
     }
-    lsSet('mdsb_football_key', key);
-  }).catch(function(e){
-    setFootballKeyStatus('err', e.message || 'Could not verify the key — check your connection and try again.');
+  }).catch(function(e){ apiFootballErr = e.message || 'unreachable'; });
+
+  var checkFootballData = fetch('/api/football-data/competitions').then(function(res){
+    var remainingHdr = res.headers.get('x-requests-available-minute');
+    return res.json().then(function(data){ return { ok: res.ok, status: res.status, data: data, remainingHdr: remainingHdr }; });
+  }).then(function(result){
+    if(!result.ok) throw new Error((result.data && (result.data.error || result.data.message)) || ('status '+result.status));
+    var quotaMsg = result.remainingHdr!=null ? (' ('+result.remainingHdr+' req/min left)') : '';
+    footballDataMsg = 'football-data.org OK.'+quotaMsg;
+  }).catch(function(e){ footballDataErr = e.message || 'unreachable'; });
+
+  Promise.all([checkApiFootball, checkFootballData]).then(function(){
+    var lines = [];
+    lines.push((apiFootballErr ? '⚠️ API-Football: '+apiFootballErr : '✅ '+apiFootballMsg));
+    lines.push((footballDataErr ? '⚠️ football-data.org: '+footballDataErr : '✅ '+footballDataMsg));
+    var cls = (apiFootballErr || footballDataErr) ? 'msg-error' : 'msg-note';
+    footballKeyStatus.innerHTML = '<div class="'+cls+'">'+lines.join('<br>')+'</div>';
   }).finally(function(){
     testFootballKeyBtn.disabled = false;
     testFootballKeyBtn.textContent = originalIcon;
@@ -715,11 +697,6 @@ function clearMatchSearchError(){ matchSearchError.innerHTML=''; }
 
 matchSearchBtn.addEventListener('click', function(){
   clearMatchSearchError();
-  if(!state.apiKey){
-    showMatchSearchError('Add your Gemini API key in Settings first.');
-    settingsPanel.classList.add('open');
-    return;
-  }
   var q = matchQuery.value.trim();
   if(!q){ showMatchSearchError('Type a match, player, or incident to search for.'); return; }
 
@@ -740,7 +717,7 @@ matchSearchBtn.addEventListener('click', function(){
 "- Relevant Law of the Game: search for and quote the actual current IFAB Laws of the Game rule (the law number and its real wording or an accurate summary of it) that governs this exact situation, so the decision can be judged against the real rule rather than a general impression of it.\n\n" +
 "Rules: state only what your sources actually report. If sources disagree, note the disagreement instead of picking one, and flag if reports are still just speculation rather than confirmed. If you cannot find real information on this, say so plainly instead of guessing.";
 
-  fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(state.apiKey), {
+  fetch('/api/gemini', {
     method:'POST',
     headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify({
@@ -777,6 +754,78 @@ matchSearchBtn.addEventListener('click', function(){
   }).finally(function(){
     matchSearchBtn.disabled = false;
     matchSearchBtn.innerHTML = '🔎 Search';
+  });
+});
+
+/* ---------------------------------------------------------------- */
+/* Live Matches Today (football-data.org — hard scores, 12 leagues)  */
+/* ---------------------------------------------------------------- */
+var STATUS_LABEL = {
+  LIVE:'LIVE', IN_PLAY:'LIVE', PAUSED:'HT',
+  FINISHED:'FT', SCHEDULED:'Scheduled', TIMED:'Scheduled', POSTPONED:'Postponed'
+};
+
+liveMatchesBtn.addEventListener('click', function(){
+  liveMatchesBtn.disabled = true;
+  var originalLabel = liveMatchesBtn.textContent;
+  liveMatchesBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px"></span>';
+  liveMatchesList.innerHTML = '<div class="msg-note">⏳ <span>Loading today\'s matches…</span></div>';
+
+  var today = new Date().toISOString().slice(0,10);
+
+  fetch('/api/football-data/matches?dateFrom='+today+'&dateTo='+today).then(function(res){
+    return res.json().then(function(data){ return { ok: res.ok, status: res.status, data: data }; });
+  }).then(function(result){
+    if(!result.ok){
+      throw new Error((result.data && result.data.error) || (result.data && result.data.message) || ('Request failed with status '+result.status));
+    }
+    var matches = (result.data && result.data.matches) || [];
+    if(!matches.length){
+      liveMatchesList.innerHTML = '<div class="msg-note">No matches today across the top 12 leagues (or they haven\'t kicked off yet). Try the search box above for anything else.</div>';
+      return;
+    }
+    liveMatchesList.innerHTML = '';
+    matches.slice(0, 20).forEach(function(m){
+      var home = m.homeTeam && m.homeTeam.name || 'Home';
+      var away = m.awayTeam && m.awayTeam.name || 'Away';
+      var comp = m.competition && m.competition.name || '';
+      var score = (m.score && m.score.fullTime) || {};
+      var scoreStr = (score.home!=null && score.away!=null) ? (score.home+' – '+score.away) : 'vs';
+      var statusLabel = STATUS_LABEL[m.status] || m.status || '';
+      var kickoff = m.utcDate ? new Date(m.utcDate).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'live-match-chip';
+      chip.innerHTML =
+        '<span>'+home+' '+scoreStr+' '+away+'<br><span style="color:var(--dim);font-size:10px">'+comp+'</span></span>' +
+        '<span class="lm-status">'+statusLabel+(kickoff && statusLabel==='Scheduled' ? ' · '+kickoff : '')+'</span>';
+
+      chip.addEventListener('click', function(){
+        matchQuery.value = home+' vs '+away+' ('+comp+', '+today+')';
+        // Seed verified facts with the hard, exact score from football-data.org so it
+        // doesn't need to be re-confirmed by the Gemini web search below — only the
+        // narrative detail (scorers, cards, stats) still needs that search.
+        var lines = [
+          'Competition & date: '+comp+', '+today,
+          'Status: '+statusLabel,
+          (score.home!=null && score.away!=null) ? ('Final/current score: '+home+' '+score.home+' - '+score.away+' '+away) : 'Score: not yet available',
+          '(Source: football-data.org — scorers, cards, and stats not included; use Search above or the research chat below for those.)'
+        ];
+        verifiedFacts.value = lines.join('\n');
+        matchSources.innerHTML = 'Source: <a href="https://www.football-data.org" target="_blank" rel="noopener" style="color:var(--neon)">football-data.org</a>';
+        matchResults.style.display = 'block';
+        saveWorkspace();
+        matchQuery.scrollIntoView({ behavior:'smooth', block:'center' });
+      });
+
+      liveMatchesList.appendChild(chip);
+    });
+  }).catch(function(e){
+    liveMatchesList.innerHTML = '<div class="msg-error">⚠️ <span>'+(e.message || 'Could not load live matches.')+'</span></div>';
+  }).finally(function(){
+    liveMatchesBtn.disabled = false;
+    liveMatchesBtn.textContent = originalLabel;
   });
 });
 
@@ -934,11 +983,6 @@ function sendChatMessage(){
   clearChatError();
   var text = chatInput.value.trim();
   if(!text && pendingAttachments.length === 0) return;
-  if(!state.apiKey){
-    showChatError('Add your Gemini API key in Settings first.');
-    settingsPanel.classList.add('open');
-    return;
-  }
 
   var images = pendingAttachments.filter(function(a){ return a.kind === 'image'; });
   var files = pendingAttachments.filter(function(a){ return a.kind === 'file'; });
@@ -967,7 +1011,7 @@ function sendChatMessage(){
     ? "\n\n[Real match facts already found via the search tool above — treat these as already-confirmed, no need to re-ask for them:]\n" + searchContext
     : '');
 
-  fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(state.apiKey), {
+  fetch('/api/gemini', {
     method:'POST',
     headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify({
@@ -1113,11 +1157,6 @@ scriptBox.addEventListener('input', function(){ updateCounts(); debouncedSaveWor
 
 draftBtn.addEventListener('click', function(){
   clearDraftError();
-  if(!state.apiKey){
-    showDraftError('Add your Gemini API key in Settings first.');
-    settingsPanel.classList.add('open');
-    return;
-  }
   var team = teamDetails.value.trim();
   if(!team){ showDraftError('Add team/match details before drafting.'); return; }
 
@@ -1150,7 +1189,7 @@ draftBtn.addEventListener('click', function(){
 "Output ONLY the script text with the three bracketed section headings shown above (replace the parenthetical instructions with the actual spoken script content), nothing else — no preamble, no extra notes, no markdown formatting.\n\n" +
 "CRITICAL: Only use scores, stats, minutes, and incidents that are explicitly present in the Team/Match Details or Tactical Context above. Do not invent scorelines, cards, injuries, or quotes that weren't given to you. If a detail you'd want isn't provided, speak in general tactical terms instead of fabricating a specific fact. If a relevant Law of the Game or rule text is present in the input, base your refereeing verdict on that exact rule rather than a general impression of the law.";
 
-  fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(state.apiKey), {
+  fetch('/api/gemini', {
     method:'POST',
     headers:{ 'Content-Type':'application/json' },
     body: JSON.stringify({ contents:[{ role:'user', parts:[{ text: prompt }] }] })
